@@ -1,0 +1,64 @@
+name: Scrape Gmaps
+
+on:
+  workflow_dispatch:
+    inputs:
+      queries_file:
+        description: "File query (satu query per baris)"
+        default: "queries.txt"
+      depth:
+        description: "Kedalaman scroll hasil (makin besar = makin banyak & lama)"
+        default: "10"
+      extra_reviews:
+        description: "Ambil ulasan terbaru (perlu untuk filter aktif; lebih lambat)"
+        type: boolean
+        default: true
+      min_rating:
+        description: "Rating minimal (0 = tanpa batas)"
+        default: "4.5"
+      max_days:
+        description: "Maks umur ulasan terakhir dalam hari (0 = tidak difilter)"
+        default: "180"
+      only_no_web:
+        description: "Hanya yang benar-benar tanpa web (buang yang cuma punya IG/FB)"
+        type: boolean
+        default: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scrape Google Maps (gosom)
+        run: |
+          touch results.csv
+          chmod 666 results.csv
+          timeout 270m docker run --rm -v "$PWD:/work" -w /work gosom/google-maps-scraper \
+            -input "/work/${{ inputs.queries_file }}" \
+            -results /work/results.csv \
+            -depth "${{ inputs.depth }}" \
+            -c 2 \
+            -lang id \
+            ${{ inputs.extra_reviews && '-extra-reviews' || '' }} \
+            -exit-on-inactivity 5m \
+          || echo "Scrape selesai/dihentikan (exit code $?), lanjut proses hasil yang sudah ada"
+          echo "Baris hasil mentah: $(wc -l < results.csv)"
+
+      - name: Filter leads (tanpa web + nomor HP)
+        run: |
+          python3 process_leads.py results.csv \
+            --min-rating "${{ inputs.min_rating }}" \
+            --max-days "${{ inputs.max_days }}" \
+            ${{ inputs.only_no_web && '--strict' || '' }}
+
+      - name: Upload hasil
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gmaps-leads-${{ github.run_number }}
+          path: |
+            leads.csv
+            leads_landline.csv
+            results.csv
